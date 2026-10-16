@@ -46,6 +46,18 @@ To try a custom schema, drop `samples/tiny.fbs` together with `samples/data.bin`
 | `pnpm samples[:big]`  | generate sample files; `:big` adds ones that trigger the size guard |
 | `pnpm schemas:update` | re-fetch the bundled schemas from their pinned releases             |
 
+## Deploying (Cloudflare)
+
+The build is a static site, so any static host works. For Cloudflare, `wrangler.jsonc` serves `build/`
+as a single-page app. Use these settings in the Cloudflare dashboard:
+
+| Setting        | Value                 |
+| -------------- | --------------------- |
+| Build command  | `pnpm build`          |
+| Deploy command | `npx wrangler deploy` |
+
+Or deploy from your machine (after `npx wrangler login`): `pnpm deploy`.
+
 ## Configuration
 
 Limits you may want to change are in [`src/lib/core/config.ts`](src/lib/core/config.ts): the size

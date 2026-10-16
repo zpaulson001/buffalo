@@ -16,7 +16,8 @@
 		"test:watch": "vitest",
 		"samples": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/make-samples.ts",
 		"samples:big": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/make-samples.ts --big",
-		"schemas:update": "scripts/update-schemas.sh"
+		"schemas:update": "scripts/update-schemas.sh",
+		"deploy": "pnpm build && wrangler deploy"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -41,7 +42,8 @@
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.60.1",
 		"vite": "^8.3.0",
-		"vitest": "^5.0.4"
+		"vitest": "^5.0.4",
+		"wrangler": "^4.151.0"
 	},
 	"imports": {
 		"#lib": "./src/lib/index.js",
