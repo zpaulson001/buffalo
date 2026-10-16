@@ -143,12 +143,11 @@ Fold gutter markers respond to `mousedown` + `click` events on `.cm-foldGutter s
 - **pnpm version.** Older pnpm (10.x) can't use a node_modules created by 11/12 (`ERR_PNPM_UNEXPECTED_STORE`).
   If `pnpm -v` is not 12.x, run `pnpm self-update` or use `corepack`; a stale global pnpm under nvm's
   Node can shadow Homebrew's.
-- **pnpm blocks dependency install scripts** unless allowed in `pnpm-workspace.yaml` (`allowBuilds`).
-  `esbuild` and `workerd` (Cloudflare's runtime, via `wrangler`) are allowed. A new dependency with an
-  install script fails `pnpm install` with `ERR_PNPM_IGNORED_BUILDS` until it's added there.
-- **Cloudflare deploy.** `wrangler.jsonc` serves `build/` as an SPA; `wrangler` is a dev dependency so
-  the deploy step doesn't auto-install it (that auto-install is what trips the previous gotcha). Check
-  a deploy locally with `pnpm exec wrangler deploy --dry-run` after `pnpm build`.
+- **pnpm blocks dependency install scripts** unless allowed in `pnpm-workspace.yaml` (`allowBuilds`;
+  only `esbuild` is). A new dependency with an install script fails `pnpm install` with
+  `ERR_PNPM_IGNORED_BUILDS` until it's added there.
+- **Deployment** is Cloudflare Pages (see the README): build command `pnpm build`, output directory
+  `build`, no deploy command and no wrangler. Don't add wrangler config unless the hosting changes.
 - **Adapter config lives in `vite.config.ts`** (SvelteKit 3 style), there is no `svelte.config.js`.
 - **Theme.** Dark mode is class-based (`@custom-variant dark` in `routes/layout.css`). A tiny script in
   `app.html` applies the saved theme before paint; keep it in sync with `ui/theme.svelte.ts`.

@@ -46,17 +46,19 @@ To try a custom schema, drop `samples/tiny.fbs` together with `samples/data.bin`
 | `pnpm samples[:big]`  | generate sample files; `:big` adds ones that trigger the size guard |
 | `pnpm schemas:update` | re-fetch the bundled schemas from their pinned releases             |
 
-## Deploying (Cloudflare)
+## Deploying (Cloudflare Pages)
 
-The build is a static site, so any static host works. For Cloudflare, `wrangler.jsonc` serves `build/`
-as a single-page app. Use these settings in the Cloudflare dashboard:
+The build is a static single-page app, so any static host works. For Cloudflare **Pages** (create a
+Pages project, not a Worker) import the Git repo with:
 
-| Setting        | Value                 |
-| -------------- | --------------------- |
-| Build command  | `pnpm build`          |
-| Deploy command | `npx wrangler deploy` |
+| Setting                | Value                                                              |
+| ---------------------- | ------------------------------------------------------------------ |
+| Framework preset       | None                                                               |
+| Build command          | `pnpm build`                                                       |
+| Build output directory | `build`                                                            |
+| Environment variables  | `NODE_VERSION=22` (or higher); `PNPM_VERSION=12.11.2` if requested |
 
-Or deploy from your machine (after `npx wrangler login`): `pnpm deploy`.
+There is no deploy command. Pages serves `index.html` for unknown paths, so no routing config is needed.
 
 ## Configuration
 

@@ -1,5 +1,3 @@
 # Dependencies whose install scripts may run (pnpm blocks all others).
 allowBuilds:
   esbuild: true
-  # Cloudflare's runtime binary, pulled in by wrangler (the deploy tool).
-  workerd: true
