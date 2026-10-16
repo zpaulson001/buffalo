@@ -155,7 +155,10 @@ function indexedFolding(index: FoldIndex): Extension {
 export function languageExtension(language: string, foldIndex: FoldIndex): Extension {
 	switch (language) {
 		case 'json':
-			return json();
+			// The JSON parser only works near the viewport, and CodeMirror won't offer a fold for a
+			// block that reaches past what's parsed, so big enclosing blocks would have no arrow.
+			// The line index knows every block's end as soon as its text has streamed in.
+			return [json(), indexedFolding(foldIndex)];
 		case 'prototext':
 		case 'fbt': // same token shapes: bare keys, strings, numbers, bare enum names
 			return [prototextLanguage, indexedFolding(foldIndex)];

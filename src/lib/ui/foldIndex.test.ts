@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { Node } from '../core/model';
+import { Outline } from '../core/outline';
+import { fbtFormat } from '../core/output/fbt';
+import { jsonFormat } from '../core/output/json';
+import { prototextFormat } from '../core/output/prototext';
+import type { OutputFormat } from '../core/types';
 import { FoldIndex } from './foldIndex';
 
 const TEXT = [
@@ -47,4 +53,73 @@ describe('FoldIndex', () => {
 		idx.push('x {\n}\n');
 		expect(idx.closeOf(1)).toBe(2);
 	});
+});
+
+describe('FoldIndex agrees with the navigation outline', () => {
+	const item = (i: number): Node => ({
+		k: 'obj',
+		entries: [
+			['name', { k: 'str', v: `n${i}` }],
+			[
+				'input',
+				{
+					k: 'list',
+					items: [
+						{ k: 'str', v: 'a' },
+						{ k: 'str', v: 'b' }
+					]
+				}
+			],
+			['attribute', { k: 'list', items: [{ k: 'obj', entries: [['k', { k: 'str', v: 'v' }]] }] }]
+		]
+	});
+	const tree: Node = {
+		k: 'obj',
+		entries: [
+			['version', { k: 'scalar', dtype: 'int32', v: 1 }],
+			[
+				'graph',
+				{
+					k: 'obj',
+					entries: [
+						['node', { k: 'list', items: Array.from({ length: 30 }, (_, i) => item(i)) }],
+						['data', { k: 'array', dtype: 'int32', length: 100, get: (i: number) => i } as Node]
+					]
+				}
+			]
+		]
+	};
+
+	it.each([
+		['json', jsonFormat],
+		['prototext', prototextFormat],
+		['fbt', fbtFormat]
+	] as [string, OutputFormat][])(
+		'every block that spans lines can be folded (%s)',
+		(_name, format) => {
+			const outline = new Outline();
+			const index = new FoldIndex();
+			for (const text of format.serialize(
+				{ root: tree, bytes: new Uint8Array() },
+				{ truncateTo: null },
+				outline
+			)) {
+				outline.advance(text);
+				index.push(text);
+			}
+			outline.finish();
+			let blocks = 0;
+			for (let r = 0; r < outline.size; r++) {
+				if (outline.kindOf(r) === 'leaf' || outline.endOf(r) === outline.startOf(r)) continue;
+				// Prototext has no braces for the root and repeats `node {` instead of wrapping a list,
+				// so neither of those is a foldable block there.
+				if (_name === 'prototext' && (r === 0 || outline.kindOf(r) === 'list')) continue;
+				blocks++;
+				expect(index.closeOf(outline.startOf(r)), `record ${r} at line ${outline.startOf(r)}`).toBe(
+					outline.endOf(r)
+				);
+			}
+			expect(blocks).toBeGreaterThan(30);
+		}
+	);
 });
