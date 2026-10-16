@@ -67,7 +67,7 @@
 </script>
 
 <svelte:head>
-	<title>🦬 Buffalo – binary model viewer</title>
+	<title>Buffalo – binary model viewer</title>
 </svelte:head>
 
 <div
