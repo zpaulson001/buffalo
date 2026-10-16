@@ -1,0 +1,5 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/typography';
+
+/* Class-based dark mode: the `dark` class on <html> is set by ui/theme.svelte.ts. */
+@custom-variant dark (&:where(.dark, .dark *));
