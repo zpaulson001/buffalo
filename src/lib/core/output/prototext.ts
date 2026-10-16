@@ -1,6 +1,7 @@
 import { TRUNCATE_TO, VALUES_PER_LINE } from '../config';
 import { estimateJsonChars } from '../estimate';
 import type { ArrayNode, Node } from '../model';
+import type { Marks, Seg } from '../outline';
 import { textScalar } from '../numfmt';
 import type { OutputFormat, RenderContext, RenderOptions } from '../types';
 
@@ -47,48 +48,67 @@ function* escapedBytes(bytes: Uint8Array): Generator<string> {
 function* writeEntries(
 	entries: [string, Node][],
 	depth: number,
-	opts: RenderOptions
+	opts: RenderOptions,
+	marks: Marks | undefined
 ): Generator<string> {
-	for (const [key, value] of entries) yield* writeField(key, value, depth, opts);
+	for (const [key, value] of entries) yield* writeField(key, value, depth, opts, marks, key);
 }
 
+/**
+ * Writes one field. `seg` is how the value is reached in the tree: the field
+ * name, or the element index when this is one item of a repeated field (which
+ * prototext writes as the key repeated on each line).
+ */
 function* writeField(
 	key: string,
 	node: Node,
 	depth: number,
-	opts: RenderOptions
+	opts: RenderOptions,
+	marks: Marks | undefined,
+	seg: Seg
 ): Generator<string> {
 	const pad = INDENT.repeat(depth);
 	switch (node.k) {
 		case 'scalar':
+			if (typeof seg === 'number') marks?.leaf(seg);
 			yield `${pad}${key}: ${textScalar(node.dtype, node.v)}\n`;
 			return;
 		case 'str':
+			if (typeof seg === 'number') marks?.leaf(seg);
 			yield `${pad}${key}: ${quote(node.v)}\n`;
 			return;
 		case 'enum':
+			if (typeof seg === 'number') marks?.leaf(seg);
 			yield `${pad}${key}: ${node.name}\n`;
 			return;
 		case 'bytes':
+			if (typeof seg === 'number') marks?.leaf(seg);
 			yield `${pad}${key}: "`;
 			yield* escapedBytes(node.v);
 			yield '"\n';
 			return;
 		case 'obj':
 			if (node.note) yield `${pad}# ${node.note}\n`;
+			marks?.open('obj', seg);
 			if (node.entries.length === 0) {
 				yield `${pad}${key} {}\n`;
+				marks?.close();
 				return;
 			}
 			yield `${pad}${key} {\n`;
-			yield* writeEntries(node.entries, depth + 1, opts);
+			yield* writeEntries(node.entries, depth + 1, opts, marks);
 			yield `${pad}}\n`;
+			marks?.close();
 			return;
 		case 'list':
-			for (const item of node.items) yield* writeField(key, item, depth, opts);
+			marks?.open('list', seg);
+			for (let i = 0; i < node.items.length; i++) {
+				yield* writeField(key, node.items[i], depth, opts, marks, i);
+			}
+			marks?.close();
 			return;
 		case 'array':
-			yield* writeArray(key, node, depth, opts);
+			yield* writeArray(key, node, depth, opts, marks, seg);
 			return;
 	}
 }
@@ -97,7 +117,9 @@ function* writeArray(
 	key: string,
 	node: ArrayNode,
 	depth: number,
-	opts: RenderOptions
+	opts: RenderOptions,
+	marks: Marks | undefined,
+	seg: Seg
 ): Generator<string> {
 	const { length, dtype, get } = node;
 	const pad = INDENT.repeat(depth);
@@ -105,12 +127,15 @@ function* writeArray(
 	const omitted = length - kept;
 
 	if (omitted === 0 && length <= VALUES_PER_LINE) {
+		marks?.open('array', seg, { length, kept, firstOffset: 0, perLine: Math.max(1, length) });
 		const vals: string[] = [];
 		for (let i = 0; i < length; i++) vals.push(textScalar(dtype, get(i)));
 		yield `${pad}${key}: [${vals.join(', ')}]\n`;
+		marks?.close();
 		return;
 	}
 
+	marks?.open('array', seg, { length, kept, firstOffset: 1, perLine: VALUES_PER_LINE });
 	const inner = INDENT.repeat(depth + 1);
 	yield `${pad}${key}: [\n`;
 	for (let start = 0; start < kept; start += VALUES_PER_LINE) {
@@ -122,6 +147,7 @@ function* writeArray(
 	}
 	if (omitted > 0) yield `${inner}# ... ${omitted} more values\n`;
 	yield `${pad}]\n`;
+	marks?.close();
 }
 
 export const prototextFormat: OutputFormat = {
@@ -132,9 +158,15 @@ export const prototextFormat: OutputFormat = {
 	// Same shape as the JSON, but bytes are escaped (up to 4 chars per byte).
 	estimate: (ctx: RenderContext, opts: RenderOptions) =>
 		estimateJsonChars(ctx.root, opts.truncateTo, 0, (n) => n * 4 + 2),
-	*serialize(ctx: RenderContext, opts: RenderOptions) {
+	*serialize(ctx: RenderContext, opts: RenderOptions, marks?: Marks) {
 		const root = ctx.root;
-		if (root.k === 'obj') yield* writeEntries(root.entries, 0, opts);
-		else yield* writeField('value', root, 0, opts);
+		if (root.k === 'obj') {
+			// The root has no braces in prototext; its record spans the whole document.
+			marks?.open('obj', null);
+			yield* writeEntries(root.entries, 0, opts, marks);
+			marks?.close();
+		} else {
+			yield* writeField('value', root, 0, opts, marks, null);
+		}
 	}
 };

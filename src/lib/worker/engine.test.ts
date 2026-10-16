@@ -157,3 +157,110 @@ describe('Engine', () => {
 		expect(msgs.some((m) => m.type === 'renderDone')).toBe(false);
 	});
 });
+
+describe('Engine navigation', () => {
+	async function opened(file: File) {
+		const h = harness();
+		h.engine.handle({ type: 'open', file });
+		await h.waitFor((m) => m.type === 'opened');
+		return h;
+	}
+	const answer = (msgs: FromWorker[], id: number) =>
+		msgs.find((m) => m.type === 'answer' && m.id === id) as Extract<FromWorker, { type: 'answer' }>;
+	const textOf = (msgs: FromWorker[]) =>
+		msgs.flatMap((m) => (m.type === 'chunk' ? [m.text] : [])).join('');
+
+	it('answers queries against exactly the text it streamed', async () => {
+		const { msgs, engine, waitFor } = await opened(
+			new File([buildTflite() as BlobPart], 'model.tflite')
+		);
+		engine.handle({ type: 'render', runId: 7, format: 'json', truncateTo: null, force: false });
+		await waitFor((m) => m.type === 'renderDone');
+		const lines = textOf(msgs).split('\n');
+
+		engine.handle({
+			type: 'query',
+			id: 1,
+			query: { op: 'go', text: 'subgraphs[0].tensors[2]', line: 1 }
+		});
+		const a = answer(msgs, 1);
+		expect(a.runId).toBe(7);
+		expect(a.result.kind).toBe('target');
+		if (a.result.kind !== 'target') return;
+		const t = a.result.target;
+		const element = lines.slice(t.line - 1, t.endLine).join('\n');
+		expect(element).toContain('"name": "ids"');
+		expect(element).not.toContain('"name": "weights"');
+
+		engine.handle({ type: 'query', id: 2, query: { op: 'go', text: 'name=="q"', line: 1 } });
+		expect(answer(msgs, 2).result).toMatchObject({
+			kind: 'target',
+			target: { path: 'subgraphs[0].tensors[3]' }
+		});
+
+		engine.handle({ type: 'query', id: 3, query: { op: 'pathAt', line: t.line } });
+		expect(answer(msgs, 3).result).toMatchObject({
+			kind: 'location',
+			location: { path: 'subgraphs[0].tensors[2]' }
+		});
+	});
+
+	it('answers for the latest render after a format switch', async () => {
+		const { msgs, engine, waitFor } = await opened(
+			new File([buildTflite() as BlobPart], 'model.tflite')
+		);
+		engine.handle({ type: 'render', runId: 1, format: 'json', truncateTo: null, force: false });
+		await waitFor((m) => m.type === 'renderDone' && m.runId === 1);
+		engine.handle({
+			type: 'render',
+			runId: 2,
+			format: 'prototext',
+			truncateTo: null,
+			force: false
+		});
+		await waitFor((m) => m.type === 'renderDone' && m.runId === 2);
+		const lines = msgs
+			.flatMap((m) => (m.type === 'chunk' && m.runId === 2 ? [m.text] : []))
+			.join('')
+			.split('\n');
+		engine.handle({
+			type: 'query',
+			id: 1,
+			query: { op: 'go', text: 'subgraphs[0].name', line: 1 }
+		});
+		const a = answer(msgs, 1);
+		expect(a.runId).toBe(2);
+		if (a.result.kind !== 'target') throw new Error('expected a target');
+		const subgraph = lines.slice(a.result.target.line - 1, a.result.target.endLine).join('\n');
+		expect(subgraph).toContain('name: "main"');
+	});
+
+	it('has no outline for hex, before a render, or before a file is open', async () => {
+		const empty = harness();
+		empty.engine.handle({ type: 'query', id: 1, query: { op: 'pathAt', line: 1 } });
+		expect(answer(empty.msgs, 1).result).toMatchObject({ kind: 'error' });
+
+		const { msgs, engine, waitFor } = await opened(modelFile(10));
+		engine.handle({ type: 'query', id: 2, query: { op: 'pathAt', line: 1 } });
+		expect(answer(msgs, 2).result).toMatchObject({ kind: 'error' });
+		engine.handle({ type: 'render', runId: 1, format: 'hex', truncateTo: null, force: false });
+		await waitFor((m) => m.type === 'renderDone');
+		engine.handle({ type: 'query', id: 3, query: { op: 'pathAt', line: 1 } });
+		expect(answer(msgs, 3).result).toMatchObject({ kind: 'error' });
+	});
+
+	it('can be queried while a large render is still streaming', async () => {
+		const { msgs, engine, waitFor } = await opened(modelFile(2_000_000));
+		engine.handle({ type: 'render', runId: 1, format: 'json', truncateTo: null, force: true });
+		await waitFor((m) => m.type === 'chunk');
+		engine.handle({
+			type: 'query',
+			id: 1,
+			query: { op: 'go', text: 'graph.initializer[0]', line: 1 }
+		});
+		const a = answer(msgs, 1);
+		expect(a.result.kind).toBe('target');
+		if (a.result.kind === 'target') expect(a.result.target.note).toMatch(/Still rendering/);
+		engine.handle({ type: 'cancel', runId: 1 });
+	});
+});

@@ -26,3 +26,16 @@ export const VALUES_PER_LINE = 16;
 
 /** Lists of primitives up to this long are printed on a single line. */
 export const INLINE_LIST_MAX = 8;
+
+/**
+ * Navigation index: max containers (objects, lists, arrays) recorded per render.
+ * Each costs ~21 bytes, so this caps the index at ~40 MB. Past it, deeper levels
+ * stop being navigable but the output itself is unaffected.
+ */
+export const MAX_OUTLINE_RECORDS = 2_000_000;
+
+/** Max results listed for name searches and ambiguous paths. */
+export const SEARCH_RESULT_LIMIT = 30;
+
+/** Fields whose string value identifies an element, for "go to by name". */
+export const NAME_KEYS = ['name'];

@@ -5,7 +5,16 @@ import { tags as t } from '@lezer/highlight';
 
 const base = EditorView.theme({
 	'&': { height: '100%', fontSize: '13px' },
-	'.cm-scroller': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }
+	'.cm-scroller': { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+	// The jump target is highlighted by selecting it, focused or not.
+	'.cm-selectionLayer .cm-selectionBackground': { background: '#bfdbfe !important' },
+	// Index labels ([n]) for list elements and tensor rows.
+	'.cm-index-gutter .cm-gutterElement': {
+		padding: '0 6px 0 8px',
+		textAlign: 'right',
+		fontSize: '11px',
+		color: '#2563eb'
+	}
 });
 
 export const lightTheme: Extension = [
@@ -23,10 +32,9 @@ const darkChrome = EditorView.theme(
 		'&': { color: TEXT, backgroundColor: BG },
 		'.cm-content': { caretColor: TEXT },
 		'.cm-gutters': { backgroundColor: BG, color: '#6b7280', border: 'none' },
+		'.cm-index-gutter .cm-gutterElement': { color: '#7aa2f7' },
 		'.cm-foldPlaceholder': { backgroundColor: '#1f2937', border: 'none', color: '#9ca3af' },
-		'.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
-			backgroundColor: '#264f78'
-		},
+		'.cm-selectionLayer .cm-selectionBackground': { background: '#264f78 !important' },
 		'.cm-selectionMatch': { backgroundColor: '#3b82f633' },
 		'.cm-searchMatch': { backgroundColor: '#8a6d1f66', outline: 'none' },
 		'.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: '#b9922f99' },

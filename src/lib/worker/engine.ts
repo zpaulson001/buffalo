@@ -3,6 +3,8 @@ import { CHUNK_CHARS, MAX_INFLIGHT_CHUNKS, MAX_OUTPUT_BYTES } from '../core/conf
 import { getOutputFormat, resolveInputFormat, supportedExtensions } from '../core/formats';
 import type { SchemaSource } from '../core/input/flatbuffers';
 import type { Node } from '../core/model';
+import { answerQuery, type QueryResult } from '../core/navigate';
+import { Outline } from '../core/outline';
 import type { FromWorker, ToWorker } from './protocol';
 
 interface OpenDoc {
@@ -11,6 +13,18 @@ interface OpenDoc {
 }
 
 const PROGRESS_STEP = 8 * 1024 * 1024;
+
+/**
+ * Pass strings through while telling the outline about each one. A generator
+ * only resumes after its previous string was consumed, so when the serializer
+ * reports the next structure mark the outline already knows the exact line.
+ */
+function* counting(source: Generator<string>, outline: Outline): Generator<string> {
+	for (const text of source) {
+		outline.advance(text);
+		yield text;
+	}
+}
 
 /**
  * All worker logic, with no dependency on the worker global scope: feed it
@@ -22,6 +36,8 @@ export class Engine {
 	private activeRun = 0;
 	private ackedSeq = -1;
 	private wake: (() => void) | null = null;
+	/** Navigation index of the latest render, with the run it belongs to. */
+	private outline: { outline: Outline; runId: number } | null = null;
 
 	constructor(private post: (msg: FromWorker) => void) {}
 
@@ -43,7 +59,25 @@ export class Engine {
 				if (msg.runId === this.activeRun) this.activeRun = 0;
 				this.signal();
 				break;
+			case 'query':
+				this.query(msg.id, msg.query);
+				break;
 		}
+	}
+
+	private query(id: number, query: Parameters<typeof answerQuery>[2]): void {
+		const ref = this.outline;
+		let result: QueryResult;
+		if (!this.doc) result = { kind: 'error', message: 'No file is open.' };
+		else if (!ref) result = { kind: 'error', message: 'Navigation is not available in this view.' };
+		else {
+			try {
+				result = answerQuery(this.doc.root, ref.outline, query);
+			} catch (e) {
+				result = { kind: 'error', message: e instanceof Error ? e.message : String(e) };
+			}
+		}
+		this.post({ type: 'answer', id, runId: ref?.runId ?? 0, result });
 	}
 
 	private fail(e: unknown, runId?: number): void {
@@ -63,6 +97,7 @@ export class Engine {
 	private async open(file: File, schema?: SchemaSource[]): Promise<void> {
 		const token = ++this.openToken;
 		this.doc = null;
+		this.outline = null;
 		const format = resolveInputFormat(file.name, schema);
 		if (!format) {
 			throw new Error(
@@ -132,9 +167,16 @@ export class Engine {
 		const estimateChars = truncateTo == null ? fullChars : format.estimate(ctx, opts);
 		this.post({ type: 'renderStart', runId, language: format.language, estimateChars });
 
+		// Hex has no structure to navigate; the text formats report theirs as they write.
+		const outline = format.language === 'hex' ? null : new Outline();
+		this.outline = outline ? { outline, runId } : null;
+		const source = outline
+			? counting(format.serialize(ctx, opts, outline), outline)
+			: format.serialize(ctx, opts);
+
 		let seq = 0;
 		let chars = 0;
-		for (const text of chunked(format.serialize(ctx, opts), CHUNK_CHARS)) {
+		for (const text of chunked(source, CHUNK_CHARS)) {
 			// Backpressure: wait until the UI has applied enough earlier chunks.
 			while (this.activeRun === runId && seq - 1 - this.ackedSeq >= MAX_INFLIGHT_CHUNKS) {
 				await this.waitForMessage();
@@ -147,6 +189,7 @@ export class Engine {
 			await new Promise((r) => setTimeout(r, 0));
 		}
 		if (this.activeRun !== runId) return;
+		outline?.finish();
 		this.post({ type: 'renderDone', runId, chars, truncated: truncateTo != null });
 	}
 }

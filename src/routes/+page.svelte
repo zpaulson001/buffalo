@@ -1,17 +1,48 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { baseSchemas, outputFormats, supportedExtensions } from '../lib/core/formats';
+	import Breadcrumb from '../lib/ui/Breadcrumb.svelte';
 	import { formatBytes } from '../lib/ui/format';
+	import GoToBox from '../lib/ui/GoToBox.svelte';
 	import OutputEditor from '../lib/ui/OutputEditor.svelte';
+	import { prefs } from '../lib/ui/prefs.svelte';
 	import SchemaMenu, { type SchemaItem } from '../lib/ui/SchemaMenu.svelte';
 	import SizeGuardDialog from '../lib/ui/SizeGuardDialog.svelte';
 	import { session } from '../lib/ui/session.svelte';
 	import { theme, type ThemeMode } from '../lib/ui/theme.svelte';
 
 	let dragging = $state(false);
+	let goOpen = $state(false);
 	let picker: HTMLInputElement;
 
-	onMount(() => theme.init());
+	onMount(() => {
+		prefs.init();
+		return theme.init();
+	});
+
+	// Turning the index column on/off fetches or drops its labels.
+	$effect(() => {
+		void prefs.showIndices;
+		untrack(() => void session.refreshLabels());
+	});
+
+	function onwindowkeydown(e: KeyboardEvent) {
+		if (goOpen) return; // the box handles its own keys
+		const typing = !!(e.target as HTMLElement | null)?.closest('input, textarea, select');
+		if (typing) return;
+		if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && session.canGoTo) {
+			e.preventDefault();
+			goOpen = true;
+		} else if (e.altKey && session.canNavigate) {
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				void session.step('next');
+			} else if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				void session.step(e.shiftKey ? 'parent' : 'prev');
+			}
+		}
+	}
 
 	const supported = supportedExtensions().join(' / ');
 	const phaseLabel = {
@@ -66,6 +97,8 @@
 	}
 </script>
 
+<svelte:window onkeydown={onwindowkeydown} />
+
 <svelte:head>
 	<title>Buffalo – binary model viewer</title>
 </svelte:head>
@@ -118,6 +151,26 @@
 					</button>
 				{/each}
 			</div>
+			<button
+				class={buttonClass}
+				disabled={!session.canGoTo}
+				title="Jump to a path, name or index ( / )"
+				onclick={() => (goOpen = true)}
+			>
+				Go to…
+			</button>
+			{#if session.outputFormat !== 'hex'}
+				<button
+					class="{buttonClass} {prefs.showIndices
+						? 'border-blue-500 text-blue-700 dark:border-blue-400 dark:text-blue-300'
+						: ''}"
+					aria-pressed={prefs.showIndices}
+					title="Show [n] indices next to list items and tensor rows"
+					onclick={() => prefs.setShowIndices(!prefs.showIndices)}
+				>
+					Indices
+				</button>
+			{/if}
 			<SchemaMenu
 				items={schemaItems}
 				active={viewing?.title ?? null}
@@ -144,6 +197,16 @@
 			</select>
 		</div>
 	</header>
+
+	{#if session.canNavigate && session.location}
+		<Breadcrumb
+			location={session.location}
+			notice={session.notice}
+			onjump={(crumb) =>
+				void session.show({ line: crumb.line, endLine: crumb.endLine, path: crumb.label })}
+			onstep={(dir) => void session.step(dir)}
+		/>
+	{/if}
 
 	{#if viewing}
 		<div
@@ -194,7 +257,14 @@
 	{/if}
 
 	<main class="relative min-h-0 flex-1">
-		<OutputEditor dark={theme.dark} onready={(sink) => session.attach(sink)} />
+		<OutputEditor
+			dark={theme.dark}
+			labels={session.labels}
+			showLabels={prefs.showIndices && session.canNavigate}
+			onready={(sink) => session.attach(sink)}
+			onposition={(line) => session.setPosition(line)}
+			onviewport={(from, to) => session.setViewport(from, to)}
+		/>
 
 		{#if !viewing && session.status === 'idle' && !session.fileName}
 			<button
@@ -222,6 +292,15 @@
 		{/if}
 	</main>
 </div>
+
+{#if goOpen}
+	<GoToBox
+		hex={session.outputFormat === 'hex'}
+		go={(text) => session.goTo(text)}
+		complete={(text) => session.complete(text)}
+		onclose={() => (goOpen = false)}
+	/>
+{/if}
 
 {#if session.confirm}
 	<SizeGuardDialog

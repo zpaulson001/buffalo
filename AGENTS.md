@@ -48,7 +48,9 @@ src/
   lib/
     ui/                        Svelte-aware code
       session.svelte.ts        Session: all UI state + actions (testable via an injected worker factory)
-      OutputEditor.svelte      CodeMirror host: sink.reset(language)/append(text), live theme swap
+      OutputEditor.svelte      CodeMirror host: sink.reset/append/reveal, live theme swap, index gutter
+      GoToBox, Breadcrumb      navigation UI (Go to box with completion/results; path bar + sibling buttons)
+      prefs.svelte.ts          persisted preferences (index labels on/off)
       SchemaMenu, SizeGuardDialog
       languages.ts             editor languages (json, prototext/fbt, proto, fbs); folding via foldIndex.ts
       editorTheme.ts, theme.svelte.ts
@@ -59,6 +61,8 @@ src/
       client.ts                typed Worker wrapper
     core/                      framework-agnostic
       model.ts                 neutral Node tree (see below)
+      outline.ts               navigation index: records of the output's structure, mapped to line numbers
+      navigate.ts              paths, name search, completion, breadcrumbs, siblings (pure functions)
       formats.ts               registries: inputFormats, outputFormats; resolveInputFormat; baseSchemas()
       types.ts                 InputFormat / OutputFormat interfaces
       config.ts                all tunables (size limit, truncation, chunk size, ...)
@@ -83,6 +87,26 @@ docs/bundled-schemas.md        where each bundled schema came from and how to up
    `sink.append` has applied a chunk. A new `render`/`open`/`cancel` supersedes the run (`runId`).
 5. Switching output format re-runs only step 3 on the retained tree.
 
+### Navigation (go to path / name / index)
+
+- Serializers take an optional `marks` argument (`outline.ts`) and call `open(kind, seg)`, `leaf(seg)`
+  and `close()` as they write: `open` just before a node's first character, `close` just after its
+  last (before any separator or newline). The engine wraps the serializer in `counting()`, which feeds
+  every emitted string to `Outline.advance` _before_ the generator resumes, so each mark is stamped
+  with the exact output line. There is no second layout algorithm to keep in sync; tests in
+  `navigate.test.ts` check every record against the real text in JSON, FBT and prototext.
+- `Outline` stores records for containers (obj/list/array) and scalar list items in typed arrays, in
+  depth-first order. Scalar object fields and tensor values have no records: a field is found by
+  scanning for its key within its parent's lines (in `OutputEditor.reveal`), a tensor value by
+  arithmetic from the array's layout. Capped at `MAX_OUTLINE_RECORDS`.
+- The outline lives in the worker next to the decoded tree. The UI sends `query` messages
+  (`go`, `complete`, `pathAt`, `sibling`, `labels`; see `navigate.ts`) and gets `answer`s tagged with
+  the render's `runId`; the session drops answers for an older render. `Session.show` reveals the
+  result in the editor, which waits for the lines to stream in if needed.
+- Hex has no outline; its Go-to box takes byte offsets (`Session.goToOffset`).
+- Name search looks at the `name` fields (`NAME_KEYS` in `config.ts`) and `key=="value"` on any field.
+  It walks the decoded tree, not the text.
+
 ### The Node tree (`core/model.ts`)
 
 `scalar` (with a `dtype`), `str`, `bytes`, `enum`, `list`, `obj` (ordered entries, optional `note` for
@@ -95,7 +119,9 @@ Input formats produce it; output formats walk it. Hex works from the original fi
 **Add an output format:** write `core/output/<name>.ts` exporting an `OutputFormat`
 (`id`, `label`, `language`, `truncate`, `estimate`, `serialize`), add it to `outputFormats` in
 `core/formats.ts`, and if it needs highlighting add a case in `ui/languages.ts`. For JSON-shaped text,
-reuse `makeJsonLikeFormat` with a `JsonStyle` (see `fbt.ts`).
+reuse `makeJsonLikeFormat` with a `JsonStyle` (see `fbt.ts`). A text format should also report its
+structure through `marks` (see `json.ts`/`prototext.ts`) so navigation works, and add it to the
+format-parameterised tests in `navigate.test.ts`; a byte-oriented format (like hex) can skip marks.
 
 **Add a FlatBuffers input format:** bundle the `.fbs` (add it to `scripts/update-schemas.sh` and
 `docs/bundled-schemas.md`), then `createFlatbuffersFormat(sources, { id, label, extensions, baseSchemas,
@@ -152,6 +178,13 @@ Fold gutter markers respond to `mousedown` + `click` events on `.cm-foldGutter s
 - **Theme.** Dark mode is class-based (`@custom-variant dark` in `routes/layout.css`). A tiny script in
   `app.html` applies the saved theme before paint; keep it in sync with `ui/theme.svelte.ts`.
 - **Prettier** uses tabs; run `pnpm format` rather than hand-aligning.
+- **`view?.dispatch(f(x))` doesn't evaluate `x` while `view` is undefined.** In a Svelte `$effect`
+  that means the effect never subscribes to what `x` reads. Read props/state into a variable first
+  (see the index-gutter effect in `OutputEditor.svelte`).
+- **A non-editable CodeMirror shows no native selection.** `drawSelection()` is what makes jumps
+  visible (they select their target); keep it.
+- `svelte/prefer-svelte-reactivity` is disabled in `session.svelte.ts` on purpose (its Maps are
+  replaced wholesale or are bookkeeping, not reactive collections).
 
 ## Known limitations
 
@@ -162,6 +195,10 @@ Fold gutter markers respond to `mousedown` + `click` events on `.cm-foldGutter s
 - A single very large `bytes` field becomes one long base64 line, which CodeMirror handles poorly.
 - The `.fbs` parser skips `rpc_service`, and doesn't support `nested_flatbuffer` or size-prefixed buffers.
   A custom schema needs a `root_type`.
+- Navigation: scalar object fields and tensor values have no index records (found by key scan / layout
+  math), and past `MAX_OUTLINE_RECORDS` containers deeper levels aren't navigable. In prototext a
+  one-item list isn't labelled `[0]`. Name search covers `name` fields and `key=="value"` only.
+  Queries made while a render is still streaming only see what has been generated so far.
 - Fold detection for prototext/FBT/schema views is line-based: a `{` followed by a trailing comment
   on the same line won't fold.
 - The main bundle includes protobufjs and the schema texts because the UI imports the format registry.

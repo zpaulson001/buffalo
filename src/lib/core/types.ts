@@ -1,4 +1,5 @@
 import type { Node } from './model';
+import type { Marks } from './outline';
 
 /** The schema an input format reads with, kept so it can be shown to the user. */
 export interface BaseSchema {
@@ -41,5 +42,9 @@ export interface OutputFormat {
 	};
 	/** Estimated number of characters `serialize` will produce. */
 	estimate(ctx: RenderContext, opts: RenderOptions): number;
-	serialize(ctx: RenderContext, opts: RenderOptions): Generator<string>;
+	/**
+	 * Yields the output text in small strings. If `marks` is given, report the
+	 * structure as it is written (see outline.ts) so the output can be navigated.
+	 */
+	serialize(ctx: RenderContext, opts: RenderOptions, marks?: Marks): Generator<string>;
 }

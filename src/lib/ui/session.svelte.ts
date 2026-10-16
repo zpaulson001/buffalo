@@ -1,6 +1,19 @@
+/* eslint-disable svelte/prefer-svelte-reactivity --
+   The Maps here never need per-key reactivity: `labels` is replaced wholesale
+   ($state.raw) and `pending` is plain bookkeeping for in-flight queries. */
 import { detectInputFormat, outputFormats } from '../core/formats';
 import type { SchemaSource } from '../core/input/flatbuffers';
 import { TRUNCATE_TO } from '../core/config';
+import type {
+	GoResult,
+	Hint,
+	Location,
+	Query,
+	QueryResult,
+	Refine,
+	Target
+} from '../core/navigate';
+import { prefs } from './prefs.svelte';
 import { WorkerClient } from '../worker/client';
 import type { FromWorker, Phase, ToWorker } from '../worker/protocol';
 
@@ -10,6 +23,17 @@ export interface OutputSink {
 	reset(language: string): void;
 	/** Append text; resolves once it has been applied to the editor. */
 	append(text: string): Promise<void>;
+	/**
+	 * Scroll to and select lines `line`..`endLine` (or the part `refine` names),
+	 * waiting for them to be streamed in if needed. Resolves false if they never arrive.
+	 */
+	reveal(target: RevealTarget): Promise<boolean>;
+}
+
+export interface RevealTarget {
+	line: number;
+	endLine: number;
+	refine?: Refine;
 }
 
 export type Status = 'idle' | 'loading' | 'rendering' | 'confirm' | 'done' | 'error';
@@ -48,8 +72,30 @@ export class Session {
 	/** User-supplied FlatBuffers schema sources. `.raw` so it can be posted to the worker as-is. */
 	schema = $state.raw<SchemaSource[]>([]);
 
+	/** Breadcrumb for the line the reader is at (null when unknown or not navigable). */
+	location = $state.raw<Location | null>(null);
+
+	/** `[n]` labels for the visible lines, line number -> label. */
+	labels = $state.raw<Map<number, string>>(new Map());
+
+	/** A short message about the last navigation attempt (e.g. "last item"), cleared after a moment. */
+	notice = $state<string | null>(null);
+
+	/** Line the reader is at: set by scrolling, clicking and jumping. */
+	position = 1;
+
+	private viewport = { from: 1, to: 60 };
+	private timers: {
+		location?: ReturnType<typeof setTimeout>;
+		labels?: ReturnType<typeof setTimeout>;
+		notice?: ReturnType<typeof setTimeout>;
+	} = {};
+	private nextQueryId = 1;
+	private pending = new Map<number, (result: QueryResult | null) => void>();
+
 	private currentFile: File | null = null;
-	private hasDoc = false;
+	/** Reactive: the template shows navigation controls once a file is decoded. */
+	private hasDoc = $state(false);
 	private client: WorkerLike | null = null;
 	private sink: OutputSink | null = null;
 	private runId = 0;
@@ -63,6 +109,8 @@ export class Session {
 			this.client?.terminate();
 			this.client = null;
 			this.sink = null;
+			for (const resolve of this.pending.values()) resolve(null);
+			this.pending.clear();
 		};
 	}
 
@@ -100,7 +148,15 @@ export class Session {
 		this.confirm = null;
 		this.status = 'idle';
 		this.runId++;
-		this.sink?.reset(this.outputLanguage());
+		this.resetView(this.outputLanguage());
+	}
+
+	/** Reset the editor and forget navigation state that referred to its old text. */
+	private resetView(language: string): void {
+		this.location = null;
+		this.labels = new Map();
+		this.position = 1;
+		this.sink?.reset(language);
 	}
 
 	private outputLanguage(): string {
@@ -117,7 +173,7 @@ export class Session {
 		this.fileSize = file.size;
 		this.status = 'loading';
 		this.runId++; // invalidate any in-flight chunks
-		this.sink?.reset(this.outputLanguage());
+		this.resetView(this.outputLanguage());
 		this.client?.send({
 			type: 'open',
 			file,
@@ -152,7 +208,7 @@ export class Session {
 		this.runId++; // ignore whatever the worker was still sending
 		this.confirm = null;
 		this.schemaView = { title, language };
-		this.sink?.reset(language);
+		this.resetView(language);
 		void this.sink?.append(text);
 	}
 
@@ -161,7 +217,131 @@ export class Session {
 		const wasViewing = this.schemaView !== null;
 		this.schemaView = null;
 		if (this.hasDoc) this.render();
-		else if (wasViewing) this.sink?.reset(this.outputLanguage());
+		else if (wasViewing) this.resetView(this.outputLanguage());
+	}
+
+	// ------------------------------------------------------------------ navigation
+
+	/** Whether the worker can answer structure questions about what's on screen. */
+	get canNavigate(): boolean {
+		return this.hasDoc && !this.schemaView && this.outputFormat !== 'hex';
+	}
+
+	/** Whether the "go to" box does anything: paths for text views, byte offsets for hex. */
+	get canGoTo(): boolean {
+		return this.hasDoc && !this.schemaView;
+	}
+
+	private ask(query: Query): Promise<QueryResult | null> {
+		const client = this.client;
+		if (!client || !this.canNavigate) return Promise.resolve(null);
+		const id = this.nextQueryId++;
+		return new Promise((resolve) => {
+			this.pending.set(id, resolve);
+			client.send({ type: 'query', id, query });
+		});
+	}
+
+	/** Jump to what `text` names: a path, a bare field, `#12`, or a name; a byte offset in hex. */
+	async goTo(text: string): Promise<GoResult> {
+		if (this.outputFormat === 'hex') return this.goToOffset(text);
+		const result = await this.ask({ op: 'go', text, line: this.position });
+		if (!result) return { kind: 'error', message: 'Navigation isn’t available right now.' };
+		if (result.kind === 'target') return this.show(result.target);
+		return result.kind === 'choices' || result.kind === 'error'
+			? result
+			: { kind: 'error', message: 'Unexpected answer.' };
+	}
+
+	/** Move to the next/previous element of the list you're in, or to the parent. */
+	async step(dir: 'next' | 'prev' | 'parent'): Promise<GoResult> {
+		const result = await this.ask({ op: 'sibling', line: this.position, dir });
+		if (result?.kind === 'target') return this.show(result.target);
+		const failure: GoResult =
+			result?.kind === 'error' ? result : { kind: 'error', message: 'Nothing to move to.' };
+		this.flash(failure.kind === 'error' ? failure.message : '');
+		return failure;
+	}
+
+	/** Show a short message for a few seconds. */
+	private flash(message: string): void {
+		this.notice = message;
+		clearTimeout(this.timers.notice);
+		this.timers.notice = setTimeout(() => (this.notice = null), 3500);
+	}
+
+	/** Scroll to a crumb or target, and make it the current position. */
+	async show(target: Target): Promise<GoResult> {
+		const ok = await this.sink?.reveal({
+			line: target.line,
+			endLine: target.endLine,
+			refine: target.refine
+		});
+		if (!ok) {
+			return {
+				kind: 'error',
+				message: 'That part of the output isn’t loaded yet. Try again in a moment.'
+			};
+		}
+		this.setPosition(target.line, true);
+		return { kind: 'target', target };
+	}
+
+	private async goToOffset(text: string): Promise<GoResult> {
+		const m = /^(0x[0-9a-f]+|\d+)$/i.exec(text.trim());
+		if (!m) return { kind: 'error', message: 'Type a byte offset like 0x1f40 or 8000.' };
+		const offset = Number(m[1]);
+		if (offset >= this.fileSize) {
+			const last = Math.max(0, this.fileSize - 1);
+			return { kind: 'error', message: `The file has ${this.fileSize} bytes (offsets 0–${last}).` };
+		}
+		const line = Math.floor(offset / 16) + 1;
+		const target: Target = { line, endLine: line, path: `offset 0x${offset.toString(16)}` };
+		const shown = await this.show(target);
+		return shown.kind === 'target'
+			? shown
+			: {
+					kind: 'error',
+					message: 'That offset isn’t in the rendered output (it may be truncated).'
+				};
+	}
+
+	async complete(text: string): Promise<Hint | null> {
+		if (this.outputFormat === 'hex') {
+			return { text: 'A byte offset, like 0x1f40 or 8000.', completions: [] };
+		}
+		const result = await this.ask({ op: 'complete', text });
+		return result?.kind === 'hint' ? result.hint : null;
+	}
+
+	/** Report the line the reader is at (scrolling, clicking, jumping). `now` skips the debounce. */
+	setPosition(line: number, now = false): void {
+		this.position = line;
+		clearTimeout(this.timers.location);
+		if (now) void this.refreshLocation();
+		else this.timers.location = setTimeout(() => void this.refreshLocation(), 60);
+	}
+
+	/** Report which lines are visible, so their index labels can be fetched. */
+	setViewport(from: number, to: number): void {
+		this.viewport = { from, to };
+		clearTimeout(this.timers.labels);
+		this.timers.labels = setTimeout(() => void this.refreshLabels(), 80);
+	}
+
+	async refreshLocation(): Promise<void> {
+		const result = await this.ask({ op: 'pathAt', line: this.position });
+		if (result?.kind === 'location') this.location = result.location;
+		else if (!this.canNavigate) this.location = null;
+	}
+
+	async refreshLabels(): Promise<void> {
+		if (!prefs.showIndices || !this.canNavigate) {
+			if (this.labels.size) this.labels = new Map();
+			return;
+		}
+		const result = await this.ask({ op: 'labels', ...this.viewport });
+		if (result?.kind === 'labels') this.labels = new Map(result.labels);
 	}
 
 	chooseFull(): void {
@@ -196,7 +376,7 @@ export class Session {
 				break;
 			case 'renderStart':
 				if (msg.runId !== this.runId) break;
-				this.sink?.reset(msg.language);
+				this.resetView(msg.language);
 				break;
 			case 'chunk':
 				if (msg.runId !== this.runId) break;
@@ -208,7 +388,17 @@ export class Session {
 				if (msg.runId !== this.runId) break;
 				this.status = 'done';
 				this.phase = null;
+				// Lines that arrived after the last viewport report can be labelled now.
+				void this.refreshLabels();
+				void this.refreshLocation();
 				break;
+			case 'answer': {
+				const resolve = this.pending.get(msg.id);
+				this.pending.delete(msg.id);
+				// An answer about an earlier render's text no longer applies to what's on screen.
+				resolve?.(msg.runId === this.runId ? msg.result : null);
+				break;
+			}
 			case 'error':
 				if (msg.runId !== undefined && msg.runId !== this.runId) break;
 				this.error = msg.message;

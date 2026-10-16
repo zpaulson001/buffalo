@@ -17,6 +17,13 @@ text** or **hex**. Everything runs client-side in a Web Worker, so nothing leave
 - Large files are handled safely: output is streamed to the editor in chunks, with progress. If the
   estimated output exceeds 200 MB you're offered to truncate each tensor to its first N values
   (marked `... N more values`) instead.
+- **Navigate by index.** Press `/` (or click **Go to…**) and type a path (`graph.node[1204]`), a field
+  that lives deeper (`node[1204]`), an index within the list you're in (`#12`), or a name
+  (`conv1.weight`, or `name=="conv1.weight"` for an exact match). It completes field names, lists
+  ambiguous matches, and selects the element it finds. A breadcrumb bar shows where you are
+  (click any part to jump, **Copy path** to copy it), **Alt+↑ / Alt+↓** move to the previous/next
+  item of the list you're in and **Alt+Shift+↑** to its parent. The **Indices** toggle shows `[n]`
+  labels next to list items and tensor rows. In hex view, **Go to…** takes a byte offset.
 - Read-only CodeMirror 6 editor with syntax highlighting, folding and search.
 - **Schemas** menu shows the bundled schemas (and any you loaded) as source.
 - Light / dark / system theme.

@@ -1,4 +1,5 @@
 import type { SchemaSource } from '../core/input/flatbuffers';
+import type { Query, QueryResult } from '../core/navigate';
 
 /** Messages between the UI thread and the parse worker. Types only. */
 
@@ -14,7 +15,9 @@ export type ToWorker =
 	| { type: 'render'; runId: number; format: string; truncateTo: number | null; force: boolean }
 	/** The UI has applied chunk `seq` of run `runId`; lets the worker send more. */
 	| { type: 'ack'; runId: number; seq: number }
-	| { type: 'cancel'; runId: number };
+	| { type: 'cancel'; runId: number }
+	/** Ask about the current output: jump to a path, complete, locate a line, ... `id` pairs the answer. */
+	| { type: 'query'; id: number; query: Query };
 
 export type FromWorker =
 	/** `total` of 0 means indeterminate. */
@@ -33,4 +36,6 @@ export type FromWorker =
 	| { type: 'renderStart'; runId: number; language: string; estimateChars: number }
 	| { type: 'chunk'; runId: number; seq: number; text: string }
 	| { type: 'renderDone'; runId: number; chars: number; truncated: boolean }
-	| { type: 'error'; runId?: number; message: string };
+	| { type: 'error'; runId?: number; message: string }
+	/** Reply to a query; `runId` is the render whose output the answer refers to (0 if none). */
+	| { type: 'answer'; id: number; runId: number; result: QueryResult };
