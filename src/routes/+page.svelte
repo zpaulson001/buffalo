@@ -67,7 +67,7 @@
 </script>
 
 <svelte:head>
-	<title>Buffalo – binary model viewer</title>
+	<title>🦬 Buffalo – binary model viewer</title>
 </svelte:head>
 
 <div
@@ -80,7 +80,7 @@
 	<header
 		class="flex flex-wrap items-center gap-3 border-b border-gray-200 bg-white px-4 py-2 dark:border-gray-800 dark:bg-gray-900"
 	>
-		<h1 class="font-semibold">Buffalo</h1>
+		<h1 class="font-semibold">🦬 Buffalo</h1>
 		{#if session.fileName}
 			<span class="truncate text-sm text-gray-600 dark:text-gray-400">
 				{session.fileName} · {formatBytes(session.fileSize)}
